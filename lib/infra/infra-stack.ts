@@ -82,6 +82,7 @@ export class InfraStack extends Stack {
     const instanceRole = new Role(this, 'instanceRole', {
       managedPolicies: [ManagedPolicy.fromAwsManagedPolicyName('AmazonEC2ReadOnlyAccess'),
         ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
+        ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
         ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore')],
       assumedBy: new ServicePrincipal('ec2.amazonaws.com'),
     });
@@ -401,7 +402,8 @@ export class InfraStack extends Stack {
       // eslint-disable-next-line max-len
       InitCommand.shellCommand('set -ex;/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s'),
       InitCommand.shellCommand('set -ex; sudo echo "vm.max_map_count=262144" >> /etc/sysctl.conf;sudo sysctl -p'),
-      InitCommand.shellCommand(`set -ex;mkdir opensearch; curl -L ${props.distributionUrl} -o opensearch.tar.gz;`
+      // InitCommand.shellCommand(`set -ex;mkdir opensearch; curl -L ${props.distributionUrl} -o opensearch.tar.gz;`
+      InitCommand.shellCommand(`set -ex;mkdir opensearch; aws s3 cp ${props.distributionUrl} ./opensearch.tar.gz;`
                 + 'tar zxf opensearch.tar.gz -C opensearch --strip-components=1; chown -R ec2-user:ec2-user opensearch;', {
         cwd: '/home/ec2-user',
         ignoreErrors: false,
