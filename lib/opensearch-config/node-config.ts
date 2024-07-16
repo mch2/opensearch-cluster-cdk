@@ -15,6 +15,7 @@ nodeConfig.set('manager', {
 });
 
 nodeConfig.set('data', {
+  'node.name': 'data-node',
   'node.roles': ['data', 'ingest'],
 });
 
@@ -31,6 +32,11 @@ nodeConfig.set('seed-data', {
 nodeConfig.set('client', {
   'node.name': 'client-node',
   'node.roles': [],
+});
+
+nodeConfig.set('search', {
+  'node.name': 'search-node',
+  'node.roles': ['search'],
 });
 
 nodeConfig.set('ml', {

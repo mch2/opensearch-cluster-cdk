@@ -109,6 +109,8 @@ export interface InfraProps extends StackProps {
   readonly ingestNodeCount?: number,
   /** Number of client nodes */
   readonly clientNodeCount?: number,
+  /** Number of search nodes */
+  readonly searchNodeCount?: number,
   /** Number of ml modes */
   readonly mlNodeCount?: number,
   /** EBS block storage size for data nodes */
@@ -117,6 +119,8 @@ export interface InfraProps extends StackProps {
   readonly mlNodeStorage?: number,
   /** EC2 instance type for data nodes */
   readonly dataInstanceType?: InstanceType,
+  /** EC2 instance type for Search nodes */
+  readonly searchInstanceType?: InstanceType,
   /** EC2 instance type for ML nodes */
   readonly mlInstanceType?: InstanceType,
   /** Whether to use 50% heap */
@@ -179,6 +183,8 @@ export class InfraStack extends Stack {
 
   private clientNodeCount: number | string;
 
+  private searchNodeCount: number | string;
+
   private mlNodeCount: number | string;
 
   private dataNodeStorage: number;
@@ -186,6 +192,8 @@ export class InfraStack extends Stack {
   private mlNodeStorage: number;
 
   private dataInstanceType: InstanceType;
+
+  private searchInstanceType: InstanceType;
 
   private mlInstanceType: InstanceType;
 
@@ -218,6 +226,7 @@ export class InfraStack extends Stack {
     let managerAsgCapacity: number;
     let dataAsgCapacity: number;
     let clientNodeAsg: AutoScalingGroup;
+    let searchNodeAsg: AutoScalingGroup;
     let seedConfig: string;
     let singleNodeInstance: Instance;
     let instanceCpuType: AmazonLinuxCpuType;
@@ -253,6 +262,7 @@ export class InfraStack extends Stack {
 
     this.dashboardsUrl = `${props?.dashboardsUrl ?? scope.node.tryGetContext('dashboardsUrl')}`;
     const dataInstanceType: InstanceType | string = `${props?.dataInstanceType ?? scope.node.tryGetContext('dataInstanceType')}`;
+    const searchInstanceType: InstanceType | string = `${props?.searchInstanceType ?? scope.node.tryGetContext('searchInstanceType')}`;
     const mlInstanceType: InstanceType | string = `${props?.mlInstanceType ?? scope.node.tryGetContext('mlInstanceType')}`;
 
     this.cpuArch = `${props?.cpuArch ?? scope.node.tryGetContext('cpuArch')}`;
@@ -263,10 +273,12 @@ export class InfraStack extends Stack {
       if (this.cpuArch.toString() === cpuArchEnum.X64) {
         instanceCpuType = AmazonLinuxCpuType.X86_64;
         this.dataInstanceType = getInstanceType(dataInstanceType, this.cpuArch.toString());
+        this.searchInstanceType = getInstanceType(searchInstanceType, this.cpuArch.toString());
         this.mlInstanceType = getInstanceType(mlInstanceType, this.cpuArch.toString());
       } else {
         instanceCpuType = AmazonLinuxCpuType.ARM_64;
         this.dataInstanceType = getInstanceType(dataInstanceType, this.cpuArch.toString());
+        this.searchInstanceType = getInstanceType(searchInstanceType, this.cpuArch.toString());
         this.mlInstanceType = getInstanceType(mlInstanceType, this.cpuArch.toString());
       }
     } else {
@@ -295,6 +307,13 @@ export class InfraStack extends Stack {
       this.clientNodeCount = 0;
     } else {
       this.clientNodeCount = parseInt(clientNode, 10);
+    }
+
+    const searchNode = `${props?.searchNodeCount ?? scope.node.tryGetContext('searchNodeCount')}`;
+    if (searchNode === 'undefined') {
+      this.searchNodeCount = 0;
+    } else {
+      this.searchNodeCount = parseInt(searchNode, 10);
     }
 
     const ingestNode = `${props?.ingestNodeCount ?? scope.node.tryGetContext('ingestNodeCount')}`;
@@ -469,7 +488,7 @@ export class InfraStack extends Stack {
 
     let dashboardsListener: NetworkListener | ApplicationListener;
     if (this.dashboardsUrl !== 'undefined') {
-      const useSSLDashboardsListener = !this.securityDisabled && !this.minDistribution 
+      const useSSLDashboardsListener = !this.securityDisabled && !this.minDistribution
         && this.opensearchDashboardsPortMapping === 443 && certificateArn !== 'undefined';
       dashboardsListener = InfraStack.createListener(
         this.elb,
@@ -509,18 +528,18 @@ export class InfraStack extends Stack {
       // Disable target security for now, can be provided as an option in the future
       InfraStack.addTargetsToListener(
         opensearchListener,
-        this.elbType, 
-        'single-node-target', 
-        9200, 
+        this.elbType,
+        'single-node-target',
+        9200,
         new InstanceTarget(singleNodeInstance),
         false);
 
       if (this.dashboardsUrl !== 'undefined') {
         InfraStack.addTargetsToListener(
           dashboardsListener!,
-          this.elbType, 
-          'single-node-osd-target', 
-          5601, 
+          this.elbType,
+          'single-node-osd-target',
+          5601,
           new InstanceTarget(singleNodeInstance),
           false);
       }
@@ -652,10 +671,38 @@ export class InfraStack extends Stack {
           requireImdsv2: true,
           signals: Signals.waitForAll(),
         });
-        Tags.of(clientNodeAsg).add('cluster', scope.stackName);
+        Tags.of(clientNodeAsg).add('cluster', this.stackName);
       }
-
       Tags.of(clientNodeAsg).add('role', 'client');
+
+      if (this.searchNodeCount > 0) {
+        searchNodeAsg = new AutoScalingGroup(this, 'searchNodeAsg', {
+          vpc: props.vpc,
+          instanceType: this.searchInstanceType,
+          machineImage: MachineImage.latestAmazonLinux2023({
+            cpuType: instanceCpuType,
+          }),
+          role: this.instanceRole,
+          maxCapacity: this.searchNodeCount,
+          minCapacity: this.searchNodeCount,
+          desiredCapacity: this.searchNodeCount,
+          vpcSubnets: {
+            subnetType: SubnetType.PRIVATE_WITH_EGRESS,
+          },
+          securityGroup: props.securityGroup,
+          blockDevices: [{
+            deviceName: '/dev/xvda',
+            volume: BlockDeviceVolume.ebs(this.dataNodeStorage, { deleteOnTermination: true, volumeType: this.storageVolumeType }),
+          }],
+          init: CloudFormationInit.fromElements(...this.getCfnInitElement(this, clusterLogGroup, 'search')),
+          initOptions: {
+            ignoreFailures: false,
+          },
+          requireImdsv2: true,
+          signals: Signals.waitForAll(),
+        });
+        Tags.of(searchNodeAsg).add('role', 'search');
+      }
 
       if (this.mlNodeCount > 0) {
         const mlNodeAsg = new AutoScalingGroup(this, 'mlNodeAsg', {
@@ -690,18 +737,18 @@ export class InfraStack extends Stack {
       // Disable target security for now, can be provided as an option in the future
       InfraStack.addTargetsToListener(
         opensearchListener,
-        this.elbType, 
-        'opensearchTarget', 
-        9200, 
+        this.elbType,
+        'opensearchTarget',
+        9200,
         clientNodeAsg,
         false);
 
       if (this.dashboardsUrl !== 'undefined') {
         InfraStack.addTargetsToListener(
           dashboardsListener!,
-          this.elbType, 
-          'dashboardsTarget', 
-          5601, 
+          this.elbType,
+          'dashboardsTarget',
+          5601,
           clientNodeAsg,
           false);
       }
@@ -910,6 +957,12 @@ export class InfraStack extends Stack {
         }));
       }
     }
+
+    // eslint-disable-next-line max-len
+    cfnInitConfig.push(InitCommand.shellCommand(`set -ex;cd opensearch; echo "node.search.cache.size: 1mb" >> config/opensearch.yml`, {
+      cwd: '/home/ec2-user',
+      ignoreErrors: false,
+    }));
 
     if (this.distributionUrl.includes('artifacts.opensearch.org') && !this.minDistribution) {
       cfnInitConfig.push(InitCommand.shellCommand('set -ex;cd opensearch;sudo -u ec2-user bin/opensearch-plugin install repository-s3 --batch', {
